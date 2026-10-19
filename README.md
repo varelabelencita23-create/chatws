@@ -21,6 +21,7 @@ ChatWS es una aplicación de chat en tiempo real que permite a múltiples usuari
 - Spring Boot 4.1.1
 - WebSocket para comunicación bidireccional
 - STOMP como protocolo de mensajería
+- RabbitMQ como broker STOMP externo
 - SockJS para compatibilidad con navegadores antiguos
 - Jackson para serialización JSON
 
@@ -34,7 +35,13 @@ ChatWS es una aplicación de chat en tiempo real que permite a múltiples usuari
 ┌─────────────────┐         WebSocket          ┌──────────────────┐
 │   Cliente Web   │ ◄────────────────────────► │   Servidor       │
 │  (Navegador)    │     (ws://localhost:8080)  │   Spring Boot    │
-└─────────────────┘                            └──────────────────┘
+└─────────────────┘                            └────────┬─────────┘
+                                                        │ STOMP relay
+                                                        ▼
+                                               ┌──────────────────┐
+                                               │    RabbitMQ      │
+                                               │ 5672 / 61613     │
+                                               └──────────────────┘
        │                                                 │
        │ 1. Conexión WebSocket                          │
        │ 2. Suscripción a /topic/public                 │
@@ -69,7 +76,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer
 ```
 
 **Responsabilidades:**
-- Habilita el broker de mensajes en memoria
+- Reenvía los mensajes STOMP a RabbitMQ mediante el broker relay
 - Configura el prefijo `/topic` para suscripciones
 - Configura el prefijo `/app` para mensajes del cliente
 - Registra el endpoint `/chat` para conexiones WebSocket
@@ -212,7 +219,7 @@ content-type:application/json
 ### Broker de Mensajes
 **Definición:** Componente intermedio que recibe mensajes de productores y los distribuye a consumidores interesados. Actúa como un intermediario que desacopla a emisores y receptores.
 
-**En este proyecto:** Spring Boot proporciona un broker simple en memoria (`enableSimpleBroker`) que gestiona la distribución de mensajes a los clientes suscritos.
+**En este proyecto:** RabbitMQ gestiona la distribución de mensajes; Spring reenvía los destinos STOMP con `enableStompBrokerRelay`.
 
 **Tipos de destinos que maneja:**
 - **Topics (`/topic/*`):** Mensajes enviados a múltiples suscriptores (broadcast)
@@ -325,31 +332,57 @@ Cliente → @MessageMapping → Método del Controller → @SendTo → Topic →
 
 ## 🚀 Ejecución del Proyecto
 
+Antes de iniciar Spring Boot, levanta RabbitMQ con el plugin STOMP habilitado. Con Docker Desktop instalado y abierto, ejecuta:
+
+```powershell
+docker run -d --name chatws-rabbitmq `
+  -p 5672:5672 -p 61613:61613 -p 15672:15672 `
+  rabbitmq:3-management
+```
+
+Habilita el plugin STOMP (una vez por contenedor):
+
+```powershell
+docker exec chatws-rabbitmq rabbitmq-plugins enable rabbitmq_stomp
+```
+
+La aplicación se conecta a RabbitMQ en `localhost:5672` con `guest/guest`, y el relay STOMP usa `localhost:61613`. El panel de administración queda en <http://localhost:15672> (usuario y contraseña: `guest`). Si el contenedor ya existe, puedes iniciarlo con `docker start chatws-rabbitmq`.
+
+Luego ejecuta la aplicación desde la raíz del proyecto:
+
+```powershell
+./mvnw.cmd spring-boot:run
+```
+
+Requisitos: JDK compatible con el proyecto (Java 26 según `pom.xml`), Docker Desktop con RabbitMQ ejecutándose, y conexión a Internet la primera vez para descargar dependencias Maven.
+
 ### Requisitos Previos
-- Java 26 o superior
-- Maven 3.6+
+- JDK 26 (el proyecto declara Java 26 en `pom.xml`)
+- Docker Desktop con Docker iniciado
 - Navegador web moderno
 
 ### Pasos para Ejecutar
 
 1. **Clonar o descargar el proyecto**
 
-2. **Compilar el proyecto:**
+2. **Iniciar RabbitMQ** como se indica arriba. Para los siguientes usos, si el contenedor ya existe, basta con ejecutar `docker start chatws-rabbitmq`.
+
+3. **Compilar el proyecto:**
    ```bash
-   ./mvnw clean install
+   ./mvnw.cmd clean install
    ```
 
-3. **Ejecutar el servidor:**
+4. **Ejecutar el servidor:**
    ```bash
-   ./mvnw spring-boot:run
+   ./mvnw.cmd spring-boot:run
    ```
 
-4. **Abrir el cliente web:**
+5. **Abrir el cliente web:**
    - Navegar a `http://localhost:8080/index.html`
    - Ingresar nombre de usuario
    - Hacer clic en "Conectar"
 
-5. **Probar el cliente Java (opcional):**
+6. **Probar el cliente Java (opcional):**
    ```bash
    # Ejecutar la clase ChatBrowser
    java -cp target/classes:target/dependency/* org.example.chatws.utility.ChatBrowser
@@ -409,15 +442,7 @@ La comunicación es completamente asíncrona:
 - Múltiples mensajes pueden estar en tránsito simultáneamente
 
 ### Escalabilidad (Consideraciones)
-El broker simple en memoria es adecuado para:
-- Desarrollo y pruebas
-- Aplicaciones con pocos usuarios
-- Despliegues de un solo servidor
-
-Para producción con muchos usuarios, considerar:
-- Broker externo (RabbitMQ, ActiveMQ, Kafka)
-- Redis para pub/sub distribuido
-- Clustering de servidores
+El broker RabbitMQ permite compartir mensajería STOMP entre instancias. La aplicación usa un relay STOMP local y las credenciales de desarrollo predeterminadas; para un despliegue real, configura credenciales y reglas de acceso apropiadas.
 
 ---
 
